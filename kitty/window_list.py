@@ -400,25 +400,14 @@ class WindowList:
 
     @property
     def active_group(self) -> WindowGroup | None:
-        if not self.groups:
-            return None
         with suppress(Exception):
-            active = self.groups[self.active_group_idx]
-            if active is not None:
-                return active
-        gid_map = {g.id: g for g in self.groups}
-        for gid in reversed(self.active_group_history):
-            if g := gid_map.get(gid):
-                return g
-        return self.groups[0]
+            return self.groups[self.active_group_idx]
+        return None
 
     @property
     def active_window(self) -> WindowType | None:
-        g = self.active_group
-        if g is None:
-            return None
         with suppress(Exception):
-            return self.id_map[g.active_window_id]
+            return self.id_map[self.groups[self.active_group_idx].active_window_id]
         return None
 
     @property
@@ -442,11 +431,8 @@ class WindowList:
 
     @property
     def active_group_main(self) -> WindowType | None:
-        g = self.active_group
-        if g is None:
-            return None
         with suppress(Exception):
-            return self.id_map[g.main_window_id]
+            return self.id_map[self.groups[self.active_group_idx].main_window_id]
         return None
 
     def set_active_window_group_for(self, x: WindowOrId, for_keep_focus: WindowType | None = None) -> None:

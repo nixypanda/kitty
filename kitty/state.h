@@ -262,6 +262,7 @@ typedef struct DragRemoteItem {
 typedef struct Window {
     id_type id;
     bool visible;
+    bool floating;
     PyObject *title;
     WindowRenderData render_data;
     WindowRenderData window_title_render_data;

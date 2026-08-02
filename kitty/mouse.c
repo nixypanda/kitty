@@ -1064,19 +1064,22 @@ mouse_region(bool detect_borders, bool detect_title_bar) {
                 ans.window_border = 0;
             }
         }
-        // Iterate from back to front so overlapping windows resolve to the
-        // topmost window (last drawn / last attached).
-        for (unsigned int i = t->num_windows; i-- > 0; ) {
-            Window *win = t->windows + i;
-            if (contains_mouse(win) && win->render_data.screen) {
-                ans.window_idx = i; ans.window = win; break;
-            } else if (detect_title_bar && win->visible) {
-                const WindowRenderData *trd = &win->window_title_render_data;
-                if (trd->screen && trd->geometry.right > trd->geometry.left && trd->geometry.bottom > trd->geometry.top) {
-                    if (w->mouse_x >= trd->geometry.left && w->mouse_x < trd->geometry.right &&
-                            w->mouse_y >= trd->geometry.top && w->mouse_y < trd->geometry.bottom) {
-                        ans.in_title_bar = true; ans.window = win; ans.window_idx = i;
-                        break;
+        // Floating windows are the top z-layer, so hit-test them first; only if
+        // none is hit do we fall through to the tiled windows underneath.
+        for (unsigned int pass = 0; pass < 2 && !ans.window; pass++) {
+            for (unsigned int i = 0; i < t->num_windows; i++) {
+                Window *win = t->windows + i;
+                if (win->floating != (pass == 0)) continue;
+                if (contains_mouse(win) && win->render_data.screen) {
+                    ans.window_idx = i; ans.window = win; break;
+                } else if (detect_title_bar && win->visible) {
+                    const WindowRenderData *trd = &win->window_title_render_data;
+                    if (trd->screen && trd->geometry.right > trd->geometry.left && trd->geometry.bottom > trd->geometry.top) {
+                        if (w->mouse_x >= trd->geometry.left && w->mouse_x < trd->geometry.right &&
+                                w->mouse_y >= trd->geometry.top && w->mouse_y < trd->geometry.bottom) {
+                            ans.in_title_bar = true; ans.window = win; ans.window_idx = i;
+                            break;
+                        }
                     }
                 }
             }

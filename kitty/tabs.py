@@ -38,6 +38,7 @@ from .fast_data_types import (
     is_tab_bar_visible,
     last_focused_os_window_id,
     mark_tab_bar_dirty,
+    mark_window_floating,
     monotonic,
     next_window_id,
     remove_tab,
@@ -529,6 +530,8 @@ class Tab:  # {{{
         return self.floating is not None and self.floating.window_id == window.id
 
     def clear_floating_window(self) -> None:
+        if self.floating is not None:
+            mark_window_floating(self.os_window_id, self.id, self.floating.window_id, False)
         self.floating = None
         self.windows.floating_window_id = None
 
@@ -546,6 +549,7 @@ class Tab:  # {{{
             self.floating.window_id = window.id
         self.floating.enabled = True
         self.windows.floating_window_id = window.id
+        mark_window_floating(self.os_window_id, self.id, window.id, True)
         if rect is not None:
             self.floating.rect = rect
         elif self.floating.rect is None:
@@ -560,7 +564,6 @@ class Tab:  # {{{
         floating = self.new_window()
         self.set_floating_window(floating)
         self.windows.set_active_window_group_for(floating)
-        self._raise_floating_window()
         self.relayout()
 
     def _floating_layout_info(self, window: Window) -> tuple[Any, int, int, Edges, int, int]:
@@ -599,16 +602,6 @@ class Tab:  # {{{
             return
         if group := self.windows.group_for_window(window):
             group.set_geometry(geom)
-
-    def _raise_floating_window(self) -> None:
-        w = self.get_floating_window()
-        if w is None:
-            return
-        active = self.active_window
-        detach_window(self.os_window_id, self.id, w.id)
-        attach_window(self.os_window_id, self.id, w.id)
-        if active is not None:
-            set_active_window(self.os_window_id, self.id, active.id)
 
     @property
     def active_window(self) -> Window | None:
@@ -712,7 +705,6 @@ class Tab:  # {{{
         else:
             fp.enabled = True
             self._apply_floating_geometry(w)
-            self._raise_floating_window()
             self.windows.set_active_window_group_for(w)
         self.relayout()
 
@@ -733,7 +725,6 @@ class Tab:  # {{{
                 self.FLOATING_SIZE_MODE_NORMAL
             )
         self._apply_floating_geometry(w)
-        self._raise_floating_window()
         self.windows.set_active_window_group_for(w)
         self.relayout()
 
@@ -944,9 +935,6 @@ class Tab:  # {{{
         overlay_behind: bool = False, bias: float | None = None, next_to: Window | None = None,
     ) -> None:
         self.current_layout.add_window(self.windows, window, location, overlay_for, put_overlay_behind=overlay_behind, bias=bias, next_to=next_to)
-        if self.floating is not None and window.id != self.floating.window_id:
-            if self.floating.enabled:
-                self._raise_floating_window()
         if overlay_behind and (w := self.active_window):
             set_redirect_keys_to_overlay(self.os_window_id, self.id, w.id, window.id)
             buffer_keys_in_window(self.os_window_id, self.id, window.id, True)
