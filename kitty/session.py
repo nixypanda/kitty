@@ -69,6 +69,7 @@ class Tab:
         self.enabled_layouts = opts.enabled_layouts
         self.layout = (self.enabled_layouts or ['tall'])[0]
         self.layout_state: dict[str, Any] | None = None
+        self.floating: dict[str, Any] | None = None
         self.cwd: str | None = None
         self.next_title: str | None = None
 
@@ -119,6 +120,9 @@ class Session:
 
     def set_layout_state(self, val: str) -> None:
         self.tabs[-1].layout_state = json.loads(val)
+
+    def set_floating(self, val: str) -> None:
+        self.tabs[-1].floating = json.loads(val)
 
     def add_window(self, cmd: None | str | list[str], expand: Callable[[str], str] = lambda x: x) -> None:
         from .launch import parse_launch_args
@@ -255,7 +259,7 @@ def parse_session(
             else:
                 cmd, rest = parts
             cmd, rest = cmd.strip(), rest.strip()
-            if cmd not in ('launch', 'set_layout_state'):
+            if cmd not in ('launch', 'set_layout_state', 'floating_window'):
                 rest = expand(rest)
             if cmd == 'new_tab':
                 ans.add_tab(opts, rest)
@@ -296,6 +300,8 @@ def parse_session(
                 ans.focus_matching_window(rest)
             elif cmd == 'set_layout_state':
                 ans.set_layout_state(rest)
+            elif cmd == 'floating_window':
+                ans.set_floating(rest)
             else:
                 raise ValueError(f'Unknown command in session file: {cmd}')
     yield finalize_session(ans)
