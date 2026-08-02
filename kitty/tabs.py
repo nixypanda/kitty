@@ -1405,6 +1405,15 @@ class Tab:  # {{{
         return self.windows.num_groups
 
     @property
+    def has_only_floating_window(self) -> bool:
+        # The float is auxiliary: a tab left with nothing but the floating pane
+        # should not linger, so callers close it along with the tab.
+        return (
+            self.floating is not None and self.get_floating_window() is not None
+            and not self.windows.navigable_group_indices()
+        )
+
+    @property
     def active_session_name(self) -> str:
         w = self.active_window
         return '' if w is None else w.created_in_session_name
