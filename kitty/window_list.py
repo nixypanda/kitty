@@ -422,6 +422,25 @@ class WindowList:
         return None
 
     @property
+    def layout_active_window(self) -> WindowType | None:
+        # The active window as far as tiling/layout is concerned: the float is
+        # never a layoutable window, so when it is focused we fall back to the
+        # most-recent non-floating group. This keeps the underlying tiled window
+        # visible instead of being hidden because the float stole active status.
+        aw = self.active_window
+        fid = self.floating_window_id
+        if fid is None or aw is None or aw.id != fid:
+            return aw
+        gid_map = {g.id: g for g in self.groups}
+        for gid in reversed(self.active_group_history):
+            g = gid_map.get(gid)
+            if g is not None and not g.has_window_id(fid):
+                return self.id_map.get(g.active_window_id)
+        for i in self.navigable_group_indices():
+            return self.id_map.get(self.groups[i].active_window_id)
+        return None
+
+    @property
     def active_group_main(self) -> WindowType | None:
         g = self.active_group
         if g is None:

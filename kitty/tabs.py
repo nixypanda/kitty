@@ -557,12 +557,9 @@ class Tab:  # {{{
             return
         if not self.windows:
             return
-        prev_active = self.active_window
         floating = self.new_window()
         self.set_floating_window(floating)
         self.windows.set_active_window_group_for(floating)
-        if prev_active and prev_active is not floating:
-            prev_active.set_visible_in_layout(True)
         self._raise_floating_window()
         self.relayout()
 
@@ -602,7 +599,6 @@ class Tab:  # {{{
             return
         if group := self.windows.group_for_window(window):
             group.set_geometry(geom)
-            window.set_visible_in_layout(True)
 
     def _raise_floating_window(self) -> None:
         w = self.get_floating_window()
@@ -674,10 +670,10 @@ class Tab:  # {{{
                     self.windows.floating_window_id = prev_exclude
                     self.windows.force_show_title_bars = False
                 if floating_window := self.get_floating_window():
-                    if self.floating and self.floating.enabled:
+                    enabled = bool(self.floating and self.floating.enabled)
+                    if enabled:
                         self._apply_floating_geometry(floating_window)
-                    else:
-                        floating_window.set_visible_in_layout(False)
+                    floating_window.set_visible_in_layout(enabled)
                 elif exclude_window_id is not None:
                     self.clear_floating_window()
             self.relayout_borders()
@@ -713,7 +709,6 @@ class Tab:  # {{{
                     if candidate.id != w.id:
                         self.windows.set_active_window_group_for(candidate)
                         break
-            w.set_visible_in_layout(False)
         else:
             fp.enabled = True
             self._apply_floating_geometry(w)
