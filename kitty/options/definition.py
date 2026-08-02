@@ -3852,6 +3852,16 @@ map(
 )
 
 map(
+    'Toggle floating pane',
+    'toggle_floating_window kitty_mod+i toggle_floating_window',
+)
+
+map(
+    'Toggle floating pane size',
+    'toggle_floating_window_size kitty_mod+alt+i toggle_floating_window_size',
+)
+
+map(
     'Move window backward',
     'move_window_backward --allow-fallback=shifted,ascii kitty_mod+b move_window_backward',
 )

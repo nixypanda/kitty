@@ -53,12 +53,13 @@ from .fast_data_types import (
     start_drag_with_data,
     swap_tabs,
     sync_os_window_title,
+    viewport_for_window,
 )
 from .layout.base import DragOverlayMode, Layout
 from .layout.interface import create_layout_object_for, evict_cached_layouts
 from .progress import ProgressState
 from .tab_bar import TabBar, TabBarData, apply_title_template
-from .types import ac
+from .types import Edges, WindowGeometry, ac
 from .typing_compat import EdgeLiteral, SessionTab, SessionType, TypedDict
 from .utils import cmdline_for_hold, color_as_int, log_error, platform_window_id, resolved_shell, shlex_split, which
 from .window import CwdRequest, Watchers, Window, WindowCreationSpec, WindowDict, global_watchers
@@ -66,6 +67,7 @@ from .window_list import WindowList
 
 P = ParamSpec('P')
 T = TypeVar('T')
+FloatingSizeMode = Literal['normal', 'expanded']
 
 
 def update_tab_bar_visibility(func: Callable[Concatenate['TabManager', P], T]) -> Callable[Concatenate['TabManager', P], T]:
@@ -136,6 +138,10 @@ class TabDict(TypedDict):
     windows: list[WindowDict]
     groups: list[dict[str, Any]]
     active_window_history: list[int]
+    floating_window_id: int | None
+    floating_rect: tuple[int, int, int, int] | None
+    floating_enabled: bool
+    floating_size_mode: FloatingSizeMode
 
 
 class SpecialWindowInstance(NamedTuple):
@@ -188,6 +194,8 @@ class Tab:  # {{{
     has_indeterminate_progress: bool = False
     last_focused_window_with_progress_id: int = 0
     allow_relayouts: bool = True
+    FLOATING_SIZE_MODE_NORMAL: FloatingSizeMode = 'normal'
+    FLOATING_SIZE_MODE_EXPANDED: FloatingSizeMode = 'expanded'
 
     def __init__(
         self,
@@ -211,6 +219,10 @@ class Tab:  # {{{
         self.windows: WindowList = WindowList(self)
         self._last_used_layout: str | None = None
         self._current_layout_name: str | None = None
+        self.floating_window_id: int | None = None
+        self.floating_rect: tuple[int, int, int, int] | None = None
+        self.floating_enabled: bool = False
+        self.floating_size_mode: FloatingSizeMode = self.FLOATING_SIZE_MODE_NORMAL
         self.cwd = self.args.directory
         if no_initial_window:
             self._set_current_layout(self.enabled_layouts[0])
@@ -227,6 +239,8 @@ class Tab:  # {{{
             l0 = session_tab.layout
             self._set_current_layout(l0)
             self.startup(session_tab)
+        if self.floating_enabled and self.floating_window_id is None:
+            self._ensure_floating_window()
 
     def update_progress(self) -> None:
         self.num_of_windows_with_progress = 0
@@ -254,7 +268,8 @@ class Tab:  # {{{
     def has_single_window_visible(self) -> bool:
         if self.current_layout.only_active_window_visible:
             return True
-        for i, g in enumerate(self.windows.iter_all_layoutable_groups(only_visible=True)):
+        exclude_window_id = self.floating_window_id
+        for i, g in enumerate(self.windows.iter_all_layoutable_groups(only_visible=True, exclude_window_id=exclude_window_id)):
             if i > 0:
                 return False
         return True
@@ -275,6 +290,14 @@ class Tab:  # {{{
         self.name, self.cwd = other_tab.name, other_tab.cwd
         self.enabled_layouts = list(other_tab.enabled_layouts)
         self._last_used_layout = other_tab._last_used_layout
+        self.floating_window_id = other_tab.floating_window_id
+        self.floating_rect = other_tab.floating_rect
+        self.floating_enabled = other_tab.floating_enabled
+        other_mode = getattr(other_tab, 'floating_size_mode', self.FLOATING_SIZE_MODE_NORMAL)
+        if other_mode in (self.FLOATING_SIZE_MODE_NORMAL, self.FLOATING_SIZE_MODE_EXPANDED):
+            self.floating_size_mode = other_mode
+        else:
+            self.floating_size_mode = self.FLOATING_SIZE_MODE_NORMAL
         if clname := other_tab._current_layout_name:
             cl = other_tab.current_layout
             other_tab._set_current_layout(clname)
@@ -373,6 +396,10 @@ class Tab:  # {{{
             'layout_state': self.current_layout.serialize(self.windows),
             'enabled_layouts': self.enabled_layouts,
             'name': self.name,
+            'floating_window_id': self.floating_window_id,
+            'floating_rect': self.floating_rect,
+            'floating_enabled': self.floating_enabled,
+            'floating_size_mode': self.floating_size_mode,
         }
 
     def serialize_state_as_session(self, session_path: str, matched_windows: frozenset[Window] | None, ser_opts: SaveAsSessionOptions) -> list[str]:
@@ -440,6 +467,12 @@ class Tab:  # {{{
 
     def active_window_changed(self) -> None:
         w = self.active_window
+        if not self.floating_enabled and w is not None and self.is_floating_window(w):
+            for candidate in self.windows:
+                if candidate.id != w.id:
+                    self.windows.set_active_window_group_for(candidate)
+                    w = self.active_window
+                    break
         set_active_window(self.os_window_id, self.id, 0 if w is None else w.id)
         self.mark_tab_bar_dirty()
         self.relayout_borders()
@@ -449,6 +482,129 @@ class Tab:  # {{{
         tm = self.tab_manager_ref()
         if tm is not None:
             tm.mark_tab_bar_dirty()
+
+    def get_floating_window(self) -> Window | None:
+        if self.floating_window_id is None:
+            return None
+        return self.windows.window_for_id(self.floating_window_id)
+
+    def is_floating_window(self, window: Window) -> bool:
+        return self.floating_window_id == window.id
+
+    def clear_floating_window(self) -> None:
+        self.floating_window_id = None
+        self.floating_rect = None
+        self.floating_enabled = False
+        self.floating_size_mode = self.FLOATING_SIZE_MODE_NORMAL
+        self.windows.layout_exclude_window_id = None
+
+    def set_floating_window(
+        self,
+        window: Window | None,
+        rect: tuple[int, int, int, int] | None = None,
+    ) -> None:
+        if window is None:
+            self.clear_floating_window()
+            return
+        self.floating_window_id = window.id
+        self.floating_enabled = True
+        self.windows.layout_exclude_window_id = window.id
+        if rect is not None:
+            self.floating_rect = rect
+        elif self.floating_rect is None:
+            _, _, _, _, avail_w, avail_h = self._floating_layout_info(window)
+            self.floating_rect = self._floating_rect_for_mode(self.floating_size_mode, avail_w, avail_h)
+
+    def _ensure_floating_window(self) -> None:
+        if self.floating_window_id is not None:
+            return
+        if not self.windows:
+            return
+        prev_active = self.active_window
+        floating = self.new_window()
+        self.set_floating_window(floating)
+        self.windows.set_active_window_group_for(floating)
+        if prev_active and prev_active is not floating:
+            prev_active.set_visible_in_layout(True)
+        self._raise_floating_window()
+        self.relayout()
+
+    def _floating_layout_info(self, window: Window) -> tuple[Any, int, int, Edges, int, int]:
+        central, _tab_bar, _vw, _vh, cell_width, cell_height = viewport_for_window(self.os_window_id)
+        border = window.effective_border()
+        spaces = Edges(
+            window.effective_margin('left') + border + window.effective_padding('left'),
+            window.effective_margin('top') + border + window.effective_padding('top'),
+            window.effective_margin('right') + border + window.effective_padding('right'),
+            window.effective_margin('bottom') + border + window.effective_padding('bottom'),
+        )
+        avail_w = max(1, (central.width - spaces.left - spaces.right) // max(1, cell_width))
+        avail_h = max(1, (central.height - spaces.top - spaces.bottom) // max(1, cell_height))
+        return central, cell_width, cell_height, spaces, avail_w, avail_h
+
+    def _default_floating_rect(self, avail_w: int, avail_h: int) -> tuple[int, int, int, int]:
+        width = max(1, int(avail_w * 0.5))
+        height = max(1, int(avail_h * 0.5))
+        x = max(0, (avail_w - width) // 2)
+        y = max(0, (avail_h - height) // 2)
+        return x, y, width, height
+
+    def _expanded_floating_rect(self, avail_w: int, avail_h: int) -> tuple[int, int, int, int]:
+        width = max(1, int(avail_w * 0.9))
+        height = max(1, int(avail_h * 0.9))
+        x = max(0, (avail_w - width) // 2)
+        y = max(0, (avail_h - height) // 2)
+        return x, y, width, height
+
+    def _floating_rect_for_mode(self, mode: FloatingSizeMode, avail_w: int, avail_h: int) -> tuple[int, int, int, int]:
+        if mode == self.FLOATING_SIZE_MODE_EXPANDED:
+            return self._expanded_floating_rect(avail_w, avail_h)
+        return self._default_floating_rect(avail_w, avail_h)
+
+    def _clamp_floating_rect(
+        self,
+        rect: tuple[int, int, int, int],
+        avail_w: int,
+        avail_h: int,
+    ) -> tuple[int, int, int, int]:
+        x, y, w, h = rect
+        w = max(1, min(w, avail_w))
+        h = max(1, min(h, avail_h))
+        x = max(0, min(x, max(0, avail_w - w)))
+        y = max(0, min(y, max(0, avail_h - h)))
+        return x, y, w, h
+
+    def _floating_geometry_for_window(self, window: Window) -> WindowGeometry | None:
+        central, cell_width, cell_height, spaces, avail_w, avail_h = self._floating_layout_info(window)
+        if cell_width <= 0 or cell_height <= 0:
+            return None
+        rect = self._floating_rect_for_mode(self.floating_size_mode, avail_w, avail_h)
+        rect = self._clamp_floating_rect(rect, avail_w, avail_h)
+        self.floating_rect = rect
+        x, y, w, h = rect
+        left = central.left + spaces.left + x * cell_width
+        top = central.top + spaces.top + y * cell_height
+        right = left + w * cell_width
+        bottom = top + h * cell_height
+        return WindowGeometry(left=left, top=top, right=right, bottom=bottom, xnum=w, ynum=h, spaces=spaces)
+
+    def _apply_floating_geometry(self, window: Window) -> None:
+        geom = self._floating_geometry_for_window(window)
+        if geom is None:
+            return
+        if group := self.windows.group_for_window(window):
+            group.set_geometry(geom)
+            window.set_visible_in_layout(True)
+
+    def _raise_floating_window(self) -> None:
+        w = self.get_floating_window()
+        if w is None:
+            return
+        active = self.active_window
+        detach_window(self.os_window_id, self.id, w.id)
+        attach_window(self.os_window_id, self.id, w.id)
+        if active is not None:
+            set_active_window(self.os_window_id, self.id, active.id)
 
     @property
     def active_window(self) -> Window | None:
@@ -499,9 +655,23 @@ class Tab:  # {{{
     def relayout(self) -> None:
         if self.allow_relayouts:
             if self.windows:
+                exclude_window_id = self.floating_window_id
+                prev_exclude = self.windows.layout_exclude_window_id
                 self.windows.force_show_title_bars = self.force_show_title_bars
-                self.current_layout(self.windows)
-                self.windows.force_show_title_bars = False
+                if exclude_window_id is not None:
+                    self.windows.layout_exclude_window_id = exclude_window_id
+                try:
+                    self.current_layout(self.windows)
+                finally:
+                    self.windows.layout_exclude_window_id = prev_exclude
+                    self.windows.force_show_title_bars = False
+                if floating_window := self.get_floating_window():
+                    if self.floating_enabled:
+                        self._apply_floating_geometry(floating_window)
+                    else:
+                        floating_window.set_visible_in_layout(False)
+                elif exclude_window_id is not None:
+                    self.clear_floating_window()
             self.relayout_borders()
 
     def relayout_borders(self) -> None:
@@ -519,6 +689,46 @@ class Tab:  # {{{
                 draw_window_borders=draw_borders
             )
             self.update_window_title_bars()
+
+    @ac('win', 'Toggle the floating pane for the active window')
+    def toggle_floating_window(self) -> None:
+        w = self.get_floating_window()
+        if w is None:
+            self._ensure_floating_window()
+            return
+        if self.floating_enabled:
+            self.floating_enabled = False
+            if self.active_window is w:
+                for candidate in self.windows:
+                    if candidate.id != w.id:
+                        self.windows.set_active_window_group_for(candidate)
+                        break
+            w.set_visible_in_layout(False)
+        else:
+            self.floating_enabled = True
+            self._apply_floating_geometry(w)
+            self._raise_floating_window()
+            self.windows.set_active_window_group_for(w)
+        self.relayout()
+
+    @ac('win', 'Toggle floating pane size between normal and expanded')
+    def toggle_floating_window_size(self) -> None:
+        w = self.get_floating_window()
+        if w is None:
+            self._ensure_floating_window()
+            return
+        if not self.floating_enabled:
+            self.floating_enabled = True
+        else:
+            self.floating_size_mode = (
+                self.FLOATING_SIZE_MODE_EXPANDED
+                if self.floating_size_mode == self.FLOATING_SIZE_MODE_NORMAL else
+                self.FLOATING_SIZE_MODE_NORMAL
+            )
+        self._apply_floating_geometry(w)
+        self._raise_floating_window()
+        self.windows.set_active_window_group_for(w)
+        self.relayout()
 
     def create_layout_object(self, name: str) -> Layout:
         return create_layout_object_for(name, self.os_window_id, self.id)
@@ -727,6 +937,9 @@ class Tab:  # {{{
         overlay_behind: bool = False, bias: float | None = None, next_to: Window | None = None,
     ) -> None:
         self.current_layout.add_window(self.windows, window, location, overlay_for, put_overlay_behind=overlay_behind, bias=bias, next_to=next_to)
+        if self.floating_window_id is not None and window.id != self.floating_window_id:
+            if self.floating_enabled:
+                self._raise_floating_window()
         if overlay_behind and (w := self.active_window):
             set_redirect_keys_to_overlay(self.os_window_id, self.id, w.id, window.id)
             buffer_keys_in_window(self.os_window_id, self.id, window.id, True)
@@ -831,6 +1044,8 @@ class Tab:  # {{{
         return prev
 
     def remove_window(self, window: Window, destroy: bool = True, do_post_removal_update: bool = True) -> None:
+        if self.floating_window_id == window.id:
+            self.clear_floating_window()
         self.windows.remove_window(window)
         if destroy:
             remove_window(self.os_window_id, self.id, window.id)
@@ -869,9 +1084,24 @@ class Tab:  # {{{
             overlay_for = window.id
 
     def set_active_window(self, x: Window | int, for_keep_focus: Window | None = None) -> None:
-        if (w := self.windows.window_for_id(x) if isinstance(x, int) else x) is not None:
-            self.windows.set_active_window_group_for(w, for_keep_focus=for_keep_focus)
-            self.windows.move_window_to_top_of_group(w)
+        w = self.windows.window_for_id(x) if isinstance(x, int) else x
+        if w is None:
+            return
+        if self.floating_enabled:
+            floating = self.get_floating_window()
+            if floating is not None and w.id != floating.id:
+                self.windows.set_active_window_group_for(floating)
+                self.windows.move_window_to_top_of_group(floating)
+                return
+        else:
+            if self.is_floating_window(w):
+                for candidate in self.windows:
+                    if candidate.id != w.id:
+                        self.windows.set_active_window_group_for(candidate)
+                        self.windows.move_window_to_top_of_group(candidate)
+                        return
+        self.windows.set_active_window_group_for(w, for_keep_focus=for_keep_focus)
+        self.windows.move_window_to_top_of_group(w)
 
     def get_nth_window(self, n: int) -> Window | None:
         if self.windows:
@@ -1464,6 +1694,10 @@ class TabManager:  # {{{
                         'windows': windows,
                         'groups': tab.list_groups(),
                         'active_window_history': list(tab.windows.active_window_history),
+                        'floating_window_id': tab.floating_window_id,
+                        'floating_rect': tab.floating_rect,
+                        'floating_enabled': tab.floating_enabled,
+                        'floating_size_mode': tab.floating_size_mode,
                     }
 
     def serialize_state(self) -> dict[str, Any]:

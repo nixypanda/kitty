@@ -1064,7 +1064,9 @@ mouse_region(bool detect_borders, bool detect_title_bar) {
                 ans.window_border = 0;
             }
         }
-        for (unsigned int i = 0; i < t->num_windows; i++) {
+        // Iterate from back to front so overlapping windows resolve to the
+        // topmost window (last drawn / last attached).
+        for (unsigned int i = t->num_windows; i-- > 0; ) {
             Window *win = t->windows + i;
             if (contains_mouse(win) && win->render_data.screen) {
                 ans.window_idx = i; ans.window = win; break;

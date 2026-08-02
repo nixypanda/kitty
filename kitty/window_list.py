@@ -175,6 +175,24 @@ class WindowList:
         self._active_group_idx: int = -1
         self.active_group_history: Deque[int] = deque((), 64)
         self.tabref = weakref.ref(tab)
+        self.layout_exclude_window_id: int | None = None
+
+    def _layoutable_groups(self, only_visible: bool = False, exclude_window_id: int | None = None) -> list[WindowGroup]:
+        groups = self.groups
+        if exclude_window_id is not None:
+            filtered = [g for g in groups if not g.has_window_id(exclude_window_id)]
+            if filtered:
+                groups = filtered
+        if only_visible:
+            groups = [g for g in groups if g.is_visible_in_layout]
+        return list(groups)
+
+    def _layoutable_group_indices(self, exclude_window_id: int | None = None) -> list[int]:
+        if exclude_window_id is None:
+            exclude_window_id = self.layout_exclude_window_id
+        if exclude_window_id is None:
+            return list(range(len(self.groups)))
+        return [i for i, g in enumerate(self.groups) if not g.has_window_id(exclude_window_id)]
 
     def __len__(self) -> int:
         return len(self.all_windows)
@@ -306,13 +324,15 @@ class WindowList:
         self.tabref = weakref.ref(tab)
 
     def iter_windows_with_visibility(self) -> Iterator[tuple[WindowType, bool]]:
-        for g in self.groups:
+        for g in self._layoutable_groups(exclude_window_id=self.layout_exclude_window_id):
             aw = g.active_window_id
             for window in g:
                 yield window, window.id == aw
 
-    def iter_all_layoutable_groups(self, only_visible: bool = False) -> Iterator[WindowGroup]:
-        return iter(g for g in self.groups if g.is_visible_in_layout) if only_visible else iter(self.groups)
+    def iter_all_layoutable_groups(self, only_visible: bool = False, exclude_window_id: int | None = None) -> Iterator[WindowGroup]:
+        if exclude_window_id is None:
+            exclude_window_id = self.layout_exclude_window_id
+        return iter(self._layoutable_groups(only_visible=only_visible, exclude_window_id=exclude_window_id))
 
     def iter_windows_with_number(self, only_visible: bool = True) -> Iterator[tuple[int, WindowType]]:
         for i, g in enumerate(self.groups):
@@ -340,7 +360,9 @@ class WindowList:
 
     @property
     def num_groups(self) -> int:
-        return len(self.groups)
+        if self.layout_exclude_window_id is None:
+            return len(self.groups)
+        return len(self._layoutable_groups(exclude_window_id=self.layout_exclude_window_id))
 
     def window_for_id(self, x: int) -> WindowType | None:
         return self.id_map.get(x)
@@ -386,20 +408,34 @@ class WindowList:
 
     @property
     def active_group(self) -> WindowGroup | None:
+        if not self.groups:
+            return None
         with suppress(Exception):
-            return self.groups[self.active_group_idx]
-        return None
+            active = self.groups[self.active_group_idx]
+            if active is not None:
+                return active
+        gid_map = {g.id: g for g in self.groups}
+        for gid in reversed(self.active_group_history):
+            if g := gid_map.get(gid):
+                return g
+        return self.groups[0]
 
     @property
     def active_window(self) -> WindowType | None:
+        g = self.active_group
+        if g is None:
+            return None
         with suppress(Exception):
-            return self.id_map[self.groups[self.active_group_idx].active_window_id]
+            return self.id_map[g.active_window_id]
         return None
 
     @property
     def active_group_main(self) -> WindowType | None:
+        g = self.active_group
+        if g is None:
+            return None
         with suppress(Exception):
-            return self.id_map[self.groups[self.active_group_idx].main_window_id]
+            return self.id_map[g.main_window_id]
         return None
 
     def set_active_window_group_for(self, x: WindowOrId, for_keep_focus: WindowType | None = None) -> None:
@@ -485,10 +521,11 @@ class WindowList:
             self.notify_on_active_window_change(old_active_window, new_active_window)
 
     def active_window_in_nth_group(self, n: int, clamp: bool = False) -> WindowType | None:
+        indices = self._layoutable_group_indices()
         if clamp:
-            n = max(0, min(n, self.num_groups - 1))
-        if 0 <= n < self.num_groups:
-            return self.id_map.get(self.groups[n].active_window_id)
+            n = max(0, min(n, len(indices) - 1))
+        if 0 <= n < len(indices):
+            return self.id_map.get(self.groups[indices[n]].active_window_id)
         return None
 
     def active_window_in_group_id(self, group_id: int) -> WindowType | None:
@@ -498,14 +535,29 @@ class WindowList:
         return None
 
     def activate_next_window_group(self, delta: int) -> None:
-        self.set_active_group_idx(wrap_increment(self.active_group_idx, self.num_groups, delta))
+        indices = self._layoutable_group_indices()
+        if not indices:
+            return
+        try:
+            pos = indices.index(self.active_group_idx)
+        except ValueError:
+            pos = 0
+        target = indices[(pos + delta) % len(indices)]
+        self.set_active_group_idx(target)
 
     def move_window_group(self, by: int | None = None, to_group: int | None = None) -> bool:
         if self.active_group_idx < 0 or not self.groups:
             return False
         target = -1
         if by is not None:
-            target = wrap_increment(self.active_group_idx, self.num_groups, by)
+            indices = self._layoutable_group_indices()
+            if not indices:
+                return False
+            try:
+                pos = indices.index(self.active_group_idx)
+            except ValueError:
+                pos = 0
+            target = indices[(pos + by) % len(indices)]
         if to_group is not None:
             for i, group in enumerate(self.groups):
                 if group.id == to_group:
@@ -544,12 +596,27 @@ class WindowList:
         ag = self.active_group
         return {gr.id: ((gr is ag and draw_active_borders) or gr.needs_attention) for gr in self.groups}
 
+    def move_group_to_end(self, group_id: int) -> bool:
+        idx = -1
+        for i, group in enumerate(self.groups):
+            if group.id == group_id:
+                idx = i
+                break
+        if idx < 0 or idx == len(self.groups) - 1:
+            return False
+        group = self.groups.pop(idx)
+        self.groups.append(group)
+        if self._active_group_idx == idx:
+            self._active_group_idx = len(self.groups) - 1
+        elif self._active_group_idx > idx:
+            self._active_group_idx -= 1
+        return True
+
     @property
     def has_more_than_one_visible_group(self) -> bool:
         ans = 0
-        for gr in self.groups:
-            if gr.is_visible_in_layout:
-                ans += 1
-                if ans > 1:
-                    return True
+        for gr in self._layoutable_groups(only_visible=True, exclude_window_id=self.layout_exclude_window_id):
+            ans += 1
+            if ans > 1:
+                return True
         return False
