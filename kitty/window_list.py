@@ -372,6 +372,16 @@ class WindowList:
                 return g
         return None
 
+    @property
+    def floating_group(self) -> WindowGroup | None:
+        fid = self.floating_window_id
+        if fid is None:
+            return None
+        for g in self.groups:
+            if g.has_window_id(fid):
+                return g
+        return None
+
     def group_idx_for_window(self, x: WindowOrId) -> int | None:
         q = self.id_map[x] if isinstance(x, int) else x
         for i, g in enumerate(self.groups):
