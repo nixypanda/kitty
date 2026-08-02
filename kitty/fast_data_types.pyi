@@ -523,7 +523,7 @@ def init_cell_program() -> None:
 def set_os_window_chrome(os_window_id: int) -> bool:
     pass
 
-def set_borders_rects(os_window_id: int, tab_id: int, rects: list[Border]) -> None: ...
+def set_borders_rects(os_window_id: int, tab_id: int, rects: list[Border], overlay_rects: list[Border]) -> None: ...
 def init_borders_program() -> None:
     pass
 

@@ -135,13 +135,16 @@ class Borders:
         # e.g. a stack, or a single tiled window) whereas a visible overlay always
         # needs a frame to separate it from the content beneath. A zero border
         # width still yields no rects, since add_borders honours effective_border.
-        # is_visible_in_layout is the enabled/visible signal (Phase 2).
+        # is_visible_in_layout is the enabled/visible signal (Phase 2). These go in
+        # a separate list drawn after all windows, otherwise a tiled window the
+        # float overlaps would paint over the frame.
+        overlay_rects: list[Border] = []
         floating_group = all_windows.floating_group
         if floating_group is not None and floating_group.is_visible_in_layout:
             if floating_group is active_group and draw_active_borders and os_window_focused:
                 color = BorderColor.active
             else:
                 color = BorderColor.bell if floating_group.needs_attention else BorderColor.inactive
-            add_borders(rects, color, floating_group)
+            add_borders(overlay_rects, color, floating_group)
 
-        set_borders_rects(self.os_window_id, self.tab_id, rects)
+        set_borders_rects(self.os_window_id, self.tab_id, rects, overlay_rects)

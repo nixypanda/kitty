@@ -313,6 +313,7 @@ add_tab(id_type os_window_id) {
         zero_at_i(os_window->tabs, os_window->num_tabs);
         os_window->tabs[os_window->num_tabs].id = ++global_state.tab_id_counter;
         os_window->tabs[os_window->num_tabs].border_rects.vao_idx = create_border_vao();
+        os_window->tabs[os_window->num_tabs].overlay_border_rects.vao_idx = create_border_vao();
         return os_window->tabs[os_window->num_tabs++].id;
     END_WITH_OS_WINDOW
     return 0;
@@ -532,6 +533,8 @@ destroy_tab(Tab *tab) {
     for (size_t i = tab->num_windows; i > 0; i--) remove_window_inner(tab, tab->windows[i - 1].id);
     remove_vao(tab->border_rects.vao_idx);
     free(tab->border_rects.rect_buf); tab->border_rects.rect_buf = NULL;
+    remove_vao(tab->overlay_border_rects.vao_idx);
+    free(tab->overlay_border_rects.rect_buf); tab->overlay_border_rects.rect_buf = NULL;
     free(tab->windows); tab->windows = NULL;
 }
 
@@ -682,30 +685,36 @@ pyreorder_tabs(PyObject *self UNUSED, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static bool
+fill_border_rects(BorderRects *br, PyObject *rects, const OSWindow *osw) {
+    br->is_dirty = true;
+    br->num_border_rects = PyList_GET_SIZE(rects);
+    ensure_space_for(br, rect_buf, BorderRect, br->num_border_rects + 1, capacity, 32, false);
+    for (unsigned i = 0; i < br->num_border_rects; i++) {
+        PyObject *pr = PyList_GET_ITEM(rects, i);
+        unsigned long color; long long border_type;
+        BorderRect *r = br->rect_buf + i;
+        int horizontal;
+        if (!PyArg_ParseTuple(
+            pr, "IIIIkLp", &r->px.left, &r->px.top, &r->px.right, &r->px.bottom, &color, &border_type, &horizontal
+        )) return false;
+        r->left = gl_pos_x(r->px.left, osw->viewport_width);
+        r->top = gl_pos_y(r->px.top, osw->viewport_height);
+        r->right = r->left + gl_size(r->px.right - r->px.left, osw->viewport_width);
+        r->bottom = r->top - gl_size(r->px.bottom - r->px.top, osw->viewport_height);
+        r->color = color; r->border_type = border_type; r->horizontal = horizontal;
+    }
+    return true;
+}
+
 static PyObject*
 pyset_borders_rects(PyObject *self UNUSED, PyObject *args) {
     id_type os_window_id, tab_id;
-    PyObject *rects;
-    if (!PyArg_ParseTuple(args, "KKO!", &os_window_id, &tab_id, &PyList_Type, &rects)) return NULL;
+    PyObject *rects, *overlay_rects;
+    if (!PyArg_ParseTuple(args, "KKO!O!", &os_window_id, &tab_id, &PyList_Type, &rects, &PyList_Type, &overlay_rects)) return NULL;
     WITH_TAB(os_window_id, tab_id)
-        BorderRects *br = &tab->border_rects;
-        br->is_dirty = true;
-        br->num_border_rects = PyList_GET_SIZE(rects);
-        ensure_space_for(br, rect_buf, BorderRect, br->num_border_rects + 1, capacity, 32, false);
-        for (unsigned i = 0; i < br->num_border_rects; i++) {
-            PyObject *pr = PyList_GET_ITEM(rects, i);
-            unsigned long color; long long border_type;
-            BorderRect *r = br->rect_buf + i;
-            int horizontal;
-            if (!PyArg_ParseTuple(
-                pr, "IIIIkLp", &r->px.left, &r->px.top, &r->px.right, &r->px.bottom, &color, &border_type, &horizontal
-            )) return NULL;
-            r->left = gl_pos_x(r->px.left, osw->viewport_width);
-            r->top = gl_pos_y(r->px.top, osw->viewport_height);
-            r->right = r->left + gl_size(r->px.right - r->px.left, osw->viewport_width);
-            r->bottom = r->top - gl_size(r->px.bottom - r->px.top, osw->viewport_height);
-            r->color = color; r->border_type = border_type; r->horizontal = horizontal;
-        }
+        if (!fill_border_rects(&tab->border_rects, rects, osw)) return NULL;
+        if (!fill_border_rects(&tab->overlay_border_rects, overlay_rects, osw)) return NULL;
     END_WITH_TAB
     Py_RETURN_NONE;
 }

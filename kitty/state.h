@@ -379,6 +379,9 @@ typedef struct Tab {
     unsigned int active_window, num_windows, capacity;
     Window *windows;
     BorderRects border_rects;
+    // Borders for windows on the top z-layer (the floating pane). Drawn after all
+    // windows so they are not painted over by tiled windows the float overlaps.
+    BorderRects overlay_border_rects;
     CursorTrail cursor_trail;
 } Tab;
 

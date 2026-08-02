@@ -924,6 +924,11 @@ render_prepared_os_window(OSWindow *os_window, unsigned int active_window_id, co
             }
         }
     }
+    // Overlay (floating pane) borders are drawn last so they frame the float on
+    // top instead of being painted over by the tiled windows it overlaps.
+    BorderRects *obr = &tab->overlay_border_rects;
+    draw_borders(obr->vao_idx, obr->num_border_rects, obr->rect_buf, obr->is_dirty, active_window_bg, num_visible_windows, all_windows_have_same_bg, os_window);
+    obr->is_dirty = false;
     setup_os_window_for_rendering(os_window, tab, active_window, false);
     if (global_state.thumbnail_callback.os_window == os_window->id) {
         thumbnail_callback(os_window);
