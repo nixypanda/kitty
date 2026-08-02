@@ -2,6 +2,10 @@
 with pkgs; let
   inherit (lib) optional optionals;
   inherit (xorg) libX11 libXrandr libXinerama libXcursor libXi libXext;
+  appleSdk =
+    if pkgs ? "apple-sdk_15" then pkgs."apple-sdk_15"
+    else if pkgs.darwin ? apple_sdk then pkgs.darwin.apple_sdk
+    else null;
   harfbuzzWithCoreText = harfbuzz.override {withCoreText = stdenv.isDarwin;};
 in
   with python3Packages;
@@ -16,10 +20,13 @@ in
           go
           matplotlib
         ]
-        ++ optionals stdenv.isDarwin [
-          libpng
-          zlib
-        ]
+        ++ optionals stdenv.isDarwin (
+          (optionals (appleSdk != null) [ appleSdk ])
+          ++ [
+            libpng
+            zlib
+          ]
+        )
         ++ optionals stdenv.isLinux [
           fontconfig
           libunistring
