@@ -1018,6 +1018,12 @@ class Boss:
         mark_os_window_for_close(os_window_id, request_type)
 
     def _cleanup_tab_after_window_removal(self, src_tab: Tab) -> None:
+        if src_tab.has_only_floating_window:
+            # Every tiled window is gone; close the leftover floating pane (which
+            # kills its child and re-enters here once empty) so a single exit on
+            # the last tiled window tears the tab down.
+            self.close_windows_no_confirm(tuple(src_tab.windows))
+            return
         if len(src_tab) < 1:
             tm = src_tab.tab_manager_ref()
             if tm is not None:
