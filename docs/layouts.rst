@@ -29,6 +29,19 @@ control which layouts are available use :opt:`enabled_layouts`, the first listed
 layout becomes the default. Individual layouts and how to use them are described
 below.
 
+Floating pane
+-----------------
+
+The floating pane is off by default. Use ``kitty_mod+i`` to toggle it on/off.
+When visible, it has two size modes:
+
+* normal
+* expanded
+
+You can switch between these modes with the :ac:`toggle_floating_window_size`
+action. By default this is mapped to ``kitty_mod+alt+i``::
+
+    map kitty_mod+alt+i toggle_floating_window_size
 
 The Stack Layout
 ------------------

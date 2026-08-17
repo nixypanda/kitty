@@ -587,6 +587,12 @@ class TestKeys(BaseTest):
         self.ae(tm('ctrl+a'), [True])
         self.ae(tm.actions, ['new_window_with_cwd'])
 
+        tm = TM('map ctrl+shift+alt+i toggle_floating_window_size')
+        tm.actions = []
+        ev = defines.KeyEvent(ord('ı'), 0, ord('i'), defines.GLFW_MOD_CONTROL | defines.GLFW_MOD_SHIFT | defines.GLFW_MOD_ALT)
+        self.ae(tm.dispatch_possible_special_key(ev), True)
+        self.ae(tm.actions, ['toggle_floating_window_size'])
+
         tm = TM('map ctrl+f>2 set_font_size 20')
         self.ae(tm('ctrl+f', '2'), [True, True])
         self.ae(tm.actions, ['set_font_size 20'])

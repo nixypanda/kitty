@@ -917,6 +917,10 @@ defaults.map = [
     KeyDefinition(trigger=SingleKey(mods=256, key=91), definition='previous_window'),
     # move_window_forward
     KeyDefinition(trigger=SingleKey(mods=256, key=102), options=KeyMapOptions(when_focus_on='', new_mode='', mode='', on_unknown='beep', on_action='keep', timeout=None, allow_fallback=(KeyFallbackType.shifted, KeyFallbackType.alternate)), definition='move_window_forward'),
+    # toggle_floating_window
+    KeyDefinition(trigger=SingleKey(mods=256, key=105), options=KeyMapOptions(when_focus_on='', new_mode='', mode='', on_unknown='beep', on_action='keep', timeout=None, allow_fallback=(KeyFallbackType.shifted, KeyFallbackType.alternate)), definition='toggle_floating_window'),
+    # toggle_floating_window_size
+    KeyDefinition(trigger=SingleKey(mods=258, key=105), options=KeyMapOptions(when_focus_on='', new_mode='', mode='', on_unknown='beep', on_action='keep', timeout=None, allow_fallback=(KeyFallbackType.shifted, KeyFallbackType.alternate)), definition='toggle_floating_window_size'),
     # move_window_backward
     KeyDefinition(trigger=SingleKey(mods=256, key=98), options=KeyMapOptions(when_focus_on='', new_mode='', mode='', on_unknown='beep', on_action='keep', timeout=None, allow_fallback=(KeyFallbackType.shifted, KeyFallbackType.alternate)), definition='move_window_backward'),
     # move_window_to_top

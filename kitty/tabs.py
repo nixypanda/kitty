@@ -10,6 +10,7 @@ import weakref
 from collections import deque
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from functools import wraps
 from gettext import gettext as _
 from typing import Any, Concatenate, Deque, Literal, NamedTuple, Optional, ParamSpec, TypeVar, cast
@@ -37,6 +38,7 @@ from .fast_data_types import (
     is_tab_bar_visible,
     last_focused_os_window_id,
     mark_tab_bar_dirty,
+    mark_window_floating,
     monotonic,
     next_window_id,
     remove_tab,
@@ -53,12 +55,13 @@ from .fast_data_types import (
     start_drag_with_data,
     swap_tabs,
     sync_os_window_title,
+    viewport_for_window,
 )
 from .layout.base import DragOverlayMode, Layout
 from .layout.interface import create_layout_object_for, evict_cached_layouts
 from .progress import ProgressState
 from .tab_bar import TabBar, TabBarData, apply_title_template
-from .types import ac
+from .types import Edges, WindowGeometry, ac
 from .typing_compat import EdgeLiteral, SessionTab, SessionType, TypedDict
 from .utils import cmdline_for_hold, color_as_int, log_error, platform_window_id, resolved_shell, shlex_split, which
 from .window import CwdRequest, Watchers, Window, WindowCreationSpec, WindowDict, global_watchers
@@ -66,6 +69,47 @@ from .window_list import WindowList
 
 P = ParamSpec('P')
 T = TypeVar('T')
+FloatingSizeMode = Literal['normal', 'expanded']
+FLOATING_SIZE_MODE_NORMAL: FloatingSizeMode = 'normal'
+FLOATING_SIZE_MODE_EXPANDED: FloatingSizeMode = 'expanded'
+
+
+@dataclass
+class FloatingPane:
+    window_id: int
+    enabled: bool = True
+    size_mode: FloatingSizeMode = FLOATING_SIZE_MODE_NORMAL
+    rect: tuple[int, int, int, int] | None = None
+
+    @staticmethod
+    def _default_rect(avail_w: int, avail_h: int) -> tuple[int, int, int, int]:
+        width = max(1, int(avail_w * 0.5))
+        height = max(1, int(avail_h * 0.5))
+        x = max(0, (avail_w - width) // 2)
+        y = max(0, (avail_h - height) // 2)
+        return x, y, width, height
+
+    @staticmethod
+    def _expanded_rect(avail_w: int, avail_h: int) -> tuple[int, int, int, int]:
+        width = max(1, int(avail_w * 0.9))
+        height = max(1, int(avail_h * 0.9))
+        x = max(0, (avail_w - width) // 2)
+        y = max(0, (avail_h - height) // 2)
+        return x, y, width, height
+
+    def rect_for_mode(self, avail_w: int, avail_h: int) -> tuple[int, int, int, int]:
+        if self.size_mode == FLOATING_SIZE_MODE_EXPANDED:
+            return self._expanded_rect(avail_w, avail_h)
+        return self._default_rect(avail_w, avail_h)
+
+    @staticmethod
+    def clamp_rect(rect: tuple[int, int, int, int], avail_w: int, avail_h: int) -> tuple[int, int, int, int]:
+        x, y, w, h = rect
+        w = max(1, min(w, avail_w))
+        h = max(1, min(h, avail_h))
+        x = max(0, min(x, max(0, avail_w - w)))
+        y = max(0, min(y, max(0, avail_h - h)))
+        return x, y, w, h
 
 
 def update_tab_bar_visibility(func: Callable[Concatenate['TabManager', P], T]) -> Callable[Concatenate['TabManager', P], T]:
@@ -188,6 +232,8 @@ class Tab:  # {{{
     has_indeterminate_progress: bool = False
     last_focused_window_with_progress_id: int = 0
     allow_relayouts: bool = True
+    FLOATING_SIZE_MODE_NORMAL: FloatingSizeMode = 'normal'
+    FLOATING_SIZE_MODE_EXPANDED: FloatingSizeMode = 'expanded'
 
     def __init__(
         self,
@@ -211,6 +257,7 @@ class Tab:  # {{{
         self.windows: WindowList = WindowList(self)
         self._last_used_layout: str | None = None
         self._current_layout_name: str | None = None
+        self.floating: FloatingPane | None = None
         self.cwd = self.args.directory
         if no_initial_window:
             self._set_current_layout(self.enabled_layouts[0])
@@ -275,6 +322,14 @@ class Tab:  # {{{
         self.name, self.cwd = other_tab.name, other_tab.cwd
         self.enabled_layouts = list(other_tab.enabled_layouts)
         self._last_used_layout = other_tab._last_used_layout
+        other = other_tab.floating
+        if other is None:
+            self.floating = None
+        else:
+            size_mode = other.size_mode if other.size_mode in (
+                self.FLOATING_SIZE_MODE_NORMAL, self.FLOATING_SIZE_MODE_EXPANDED) else self.FLOATING_SIZE_MODE_NORMAL
+            self.floating = FloatingPane(
+                window_id=other.window_id, enabled=other.enabled, size_mode=size_mode, rect=other.rect)
         if clname := other_tab._current_layout_name:
             cl = other_tab.current_layout
             other_tab._set_current_layout(clname)
@@ -450,6 +505,88 @@ class Tab:  # {{{
         if tm is not None:
             tm.mark_tab_bar_dirty()
 
+    def get_floating_window(self) -> Window | None:
+        if self.floating is None:
+            return None
+        return self.windows.window_for_id(self.floating.window_id)
+
+    def is_floating_window(self, window: Window) -> bool:
+        return self.floating is not None and self.floating.window_id == window.id
+
+    def clear_floating_window(self) -> None:
+        if self.floating is not None:
+            mark_window_floating(self.os_window_id, self.id, self.floating.window_id, False)
+        self.floating = None
+        self.windows.floating_window_id = None
+
+    def set_floating_window(
+        self,
+        window: Window | None,
+        rect: tuple[int, int, int, int] | None = None,
+    ) -> None:
+        if window is None:
+            self.clear_floating_window()
+            return
+        if self.floating is None:
+            self.floating = FloatingPane(window_id=window.id)
+        else:
+            self.floating.window_id = window.id
+        self.floating.enabled = True
+        self.windows.floating_window_id = window.id
+        mark_window_floating(self.os_window_id, self.id, window.id, True)
+        if rect is not None:
+            self.floating.rect = rect
+        elif self.floating.rect is None:
+            _, _, _, _, avail_w, avail_h = self._floating_layout_info(window)
+            self.floating.rect = self.floating.rect_for_mode(avail_w, avail_h)
+
+    def _ensure_floating_window(self) -> None:
+        if self.get_floating_window() is not None:
+            return
+        if not self.windows:
+            return
+        floating = self.new_window()
+        self.set_floating_window(floating)
+        self.windows.set_active_window_group_for(floating)
+        self.relayout()
+
+    def _floating_layout_info(self, window: Window) -> tuple[Any, int, int, Edges, int, int]:
+        central, _tab_bar, _vw, _vh, cell_width, cell_height = viewport_for_window(self.os_window_id)
+        border = window.effective_border()
+        spaces = Edges(
+            window.effective_margin('left') + border + window.effective_padding('left'),
+            window.effective_margin('top') + border + window.effective_padding('top'),
+            window.effective_margin('right') + border + window.effective_padding('right'),
+            window.effective_margin('bottom') + border + window.effective_padding('bottom'),
+        )
+        avail_w = max(1, (central.width - spaces.left - spaces.right) // max(1, cell_width))
+        avail_h = max(1, (central.height - spaces.top - spaces.bottom) // max(1, cell_height))
+        return central, cell_width, cell_height, spaces, avail_w, avail_h
+
+    def _floating_geometry_for_window(self, window: Window) -> WindowGeometry | None:
+        fp = self.floating
+        if fp is None:
+            return None
+        central, cell_width, cell_height, spaces, avail_w, avail_h = self._floating_layout_info(window)
+        if cell_width <= 0 or cell_height <= 0:
+            return None
+        rect = fp.rect_for_mode(avail_w, avail_h)
+        rect = FloatingPane.clamp_rect(rect, avail_w, avail_h)
+        fp.rect = rect
+        x, y, w, h = rect
+        left = central.left + spaces.left + x * cell_width
+        top = central.top + spaces.top + y * cell_height
+        right = left + w * cell_width
+        bottom = top + h * cell_height
+        return WindowGeometry(left=left, top=top, right=right, bottom=bottom, xnum=w, ynum=h, spaces=spaces)
+
+    def _apply_floating_geometry(self, window: Window) -> None:
+        geom = self._floating_geometry_for_window(window)
+        if geom is None:
+            return
+        if group := self.windows.group_for_window(window):
+            group.set_geometry(geom)
+
     @property
     def active_window(self) -> Window | None:
         return self.windows.active_window
@@ -499,9 +636,23 @@ class Tab:  # {{{
     def relayout(self) -> None:
         if self.allow_relayouts:
             if self.windows:
+                exclude_window_id = self.floating.window_id if self.floating else None
+                prev_exclude = self.windows.floating_window_id
                 self.windows.force_show_title_bars = self.force_show_title_bars
-                self.current_layout(self.windows)
-                self.windows.force_show_title_bars = False
+                if exclude_window_id is not None:
+                    self.windows.floating_window_id = exclude_window_id
+                try:
+                    self.current_layout(self.windows)
+                finally:
+                    self.windows.floating_window_id = prev_exclude
+                    self.windows.force_show_title_bars = False
+                if floating_window := self.get_floating_window():
+                    enabled = bool(self.floating and self.floating.enabled)
+                    if enabled:
+                        self._apply_floating_geometry(floating_window)
+                    floating_window.set_visible_in_layout(enabled)
+                elif exclude_window_id is not None:
+                    self.clear_floating_window()
             self.relayout_borders()
 
     def relayout_borders(self) -> None:
@@ -519,6 +670,46 @@ class Tab:  # {{{
                 draw_window_borders=draw_borders
             )
             self.update_window_title_bars()
+
+    @ac('win', 'Toggle the floating pane for the active window')
+    def toggle_floating_window(self) -> None:
+        w = self.get_floating_window()
+        if w is None:
+            self._ensure_floating_window()
+            return
+        fp = self.floating
+        assert fp is not None
+        if fp.enabled:
+            fp.enabled = False
+            if self.active_window is w:
+                target = self.windows.layout_active_window
+                if target is not None and target.id != w.id:
+                    self.windows.set_active_window_group_for(target)
+        else:
+            fp.enabled = True
+            self._apply_floating_geometry(w)
+            self.windows.set_active_window_group_for(w)
+        self.relayout()
+
+    @ac('win', 'Toggle floating pane size between normal and expanded')
+    def toggle_floating_window_size(self) -> None:
+        w = self.get_floating_window()
+        if w is None:
+            self._ensure_floating_window()
+            return
+        fp = self.floating
+        assert fp is not None
+        if not fp.enabled:
+            fp.enabled = True
+        else:
+            fp.size_mode = (
+                self.FLOATING_SIZE_MODE_EXPANDED
+                if fp.size_mode == self.FLOATING_SIZE_MODE_NORMAL else
+                self.FLOATING_SIZE_MODE_NORMAL
+            )
+        self._apply_floating_geometry(w)
+        self.windows.set_active_window_group_for(w)
+        self.relayout()
 
     def create_layout_object(self, name: str) -> Layout:
         return create_layout_object_for(name, self.os_window_id, self.id)
@@ -831,6 +1022,8 @@ class Tab:  # {{{
         return prev
 
     def remove_window(self, window: Window, destroy: bool = True, do_post_removal_update: bool = True) -> None:
+        if self.floating is not None and self.floating.window_id == window.id:
+            self.clear_floating_window()
         self.windows.remove_window(window)
         if destroy:
             remove_window(self.os_window_id, self.id, window.id)
