@@ -925,6 +925,13 @@ render_prepared_os_window(OSWindow *os_window, unsigned int active_window_id, co
         }
     }
     setup_os_window_for_rendering(os_window, tab, active_window, false);
+    // Overlay (floating pane) borders are drawn last, after the layered render
+    // has been composited to the screen, so they frame the float on top without
+    // being painted over by the tiled windows it overlaps and without disturbing
+    // the offscreen layer blit (which caused scroll to judder).
+    BorderRects *obr = &tab->overlay_border_rects;
+    draw_borders(obr->vao_idx, obr->num_border_rects, obr->rect_buf, obr->is_dirty, active_window_bg, num_visible_windows, all_windows_have_same_bg, os_window);
+    obr->is_dirty = false;
     if (global_state.thumbnail_callback.os_window == os_window->id) {
         thumbnail_callback(os_window);
         global_state.thumbnail_callback.os_window = 0;
