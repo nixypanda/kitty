@@ -180,6 +180,10 @@ class TabDict(TypedDict):
     windows: list[WindowDict]
     groups: list[dict[str, Any]]
     active_window_history: list[int]
+    floating_window_id: int | None
+    floating_rect: tuple[int, int, int, int] | None
+    floating_enabled: bool
+    floating_size_mode: FloatingSizeMode
 
 
 class SpecialWindowInstance(NamedTuple):
@@ -417,6 +421,30 @@ class Tab:  # {{{
             self.windows.set_active_window_group_for(active_window_id)
         if session_tab.layout_state:
             self.current_layout.unserialize(session_tab.layout_state, self.windows)
+        # Restore the float only after the tiled groups exist so its window is
+        # present and the old->new window-id remap is available.
+        self._restore_floating_window(session_tab)
+
+    def _restore_floating_window(self, session_tab: SessionTab) -> None:
+        data = getattr(session_tab, 'floating', None)
+        if not data:
+            return
+        from .layout.base import create_window_id_map_for_unserialize
+        window_id_map = create_window_id_map_for_unserialize(self.windows)
+        new_id = window_id_map.get(int(data['id']))
+        if new_id is None or self.windows.window_for_id(new_id) is None:
+            return
+        size_mode = data.get('size_mode', self.FLOATING_SIZE_MODE_NORMAL)
+        if size_mode not in (self.FLOATING_SIZE_MODE_NORMAL, self.FLOATING_SIZE_MODE_EXPANDED):
+            size_mode = self.FLOATING_SIZE_MODE_NORMAL
+        rect = data.get('rect')
+        self.floating = FloatingPane(
+            window_id=new_id, enabled=bool(data.get('enabled', True)),
+            size_mode=size_mode, rect=tuple(rect) if rect else None)
+        self.windows.floating_window_id = new_id
+        mark_window_floating(self.os_window_id, self.id, new_id, True)
+        # startup() runs its own relayout() after _startup(), which applies the
+        # float geometry/visibility/border, so no explicit relayout here.
 
     def serialize_state(self) -> dict[str, Any]:
         return {
@@ -428,6 +456,10 @@ class Tab:  # {{{
             'layout_state': self.current_layout.serialize(self.windows),
             'enabled_layouts': self.enabled_layouts,
             'name': self.name,
+            'floating_window_id': self.floating.window_id if self.floating else None,
+            'floating_rect': self.floating.rect if self.floating else None,
+            'floating_enabled': self.floating.enabled if self.floating else False,
+            'floating_size_mode': self.floating.size_mode if self.floating else self.FLOATING_SIZE_MODE_NORMAL,
         }
 
     def serialize_state_as_session(self, session_path: str, matched_windows: frozenset[Window] | None, ser_opts: SaveAsSessionOptions) -> list[str]:
@@ -458,12 +490,33 @@ class Tab:  # {{{
                 launch_cmds.extend(gw)
                 if i == active_idx:
                     launch_cmds.append('focus')
+        # The float group is excluded from iter_all_layoutable_groups, so emit its
+        # window(s) explicitly plus a metadata command carrying enabled/size/rect.
+        floating_meta = ''
+        floating_group = self.windows.floating_group
+        if self.floating is not None and floating_group is not None:
+            fw_cmds: list[str] = []
+            for window in floating_group:
+                if matched_windows is not None and window not in matched_windows:
+                    continue
+                cwd = make_relative(window.cwd_for_serialization)
+                lc = window.as_launch_command(ser_opts, '' if cwd == most_common_cwd else cwd, is_overlay=bool(fw_cmds))
+                if lc:
+                    fw_cmds.append(shlex.join(lc))
+            if fw_cmds:
+                launch_cmds.extend(fw_cmds)
+                floating_meta = 'floating_window ' + json.dumps({
+                    'id': self.floating.window_id,
+                    'enabled': self.floating.enabled,
+                    'size_mode': self.floating.size_mode,
+                    'rect': list(self.floating.rect) if self.floating.rect else None,
+                })
         if launch_cmds:
             enabled_layouts = list(self.enabled_layouts)
             layout = self._current_layout_name
             if layout not in enabled_layouts:
                 enabled_layouts.append(layout)
-            return [
+            header = [
                 '',
                 f'new_tab {self.name}'.rstrip(),
                 f'layout {layout}',
@@ -471,7 +524,10 @@ class Tab:  # {{{
                 f'set_layout_state {json.dumps(self.current_layout.serialize(self.windows))}',
                 f'cd {most_common_cwd}',
                 ''
-            ] + launch_cmds
+            ]
+            if floating_meta:
+                header.append(floating_meta)
+            return header + launch_cmds
         return []
 
     def data_for_tab_bar(self, is_active: bool) -> TabBarData:
@@ -1685,6 +1741,10 @@ class TabManager:  # {{{
                         'windows': windows,
                         'groups': tab.list_groups(),
                         'active_window_history': list(tab.windows.active_window_history),
+                        'floating_window_id': tab.floating.window_id if tab.floating else None,
+                        'floating_rect': tab.floating.rect if tab.floating else None,
+                        'floating_enabled': tab.floating.enabled if tab.floating else False,
+                        'floating_size_mode': tab.floating.size_mode if tab.floating else tab.FLOATING_SIZE_MODE_NORMAL,
                     }
 
     def serialize_state(self) -> dict[str, Any]:
