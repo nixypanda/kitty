@@ -361,6 +361,7 @@ static void
 initialize_window(Window *w, PyObject *title, bool init_gpu_resources) {
     w->id = ++global_state.window_id_counter;
     w->visible = true;
+    w->floating = false;
     w->title = title;
     Py_XINCREF(title);
     w->scrollbar.is_hovering = false;
@@ -1233,6 +1234,17 @@ PYWRAP1(update_window_visibility) {
 }
 
 
+PYWRAP1(mark_window_floating) {
+    id_type os_window_id, tab_id, window_id;
+    int floating;
+    PA("KKKp", &os_window_id, &tab_id, &window_id, &floating);
+    WITH_WINDOW(os_window_id, tab_id, window_id);
+        window->floating = floating & 1;
+    END_WITH_WINDOW;
+    Py_RETURN_NONE;
+}
+
+
 PYWRAP1(sync_os_window_title) {
     id_type os_window_id;
     PA("K", &os_window_id);
@@ -1855,6 +1867,7 @@ static PyMethodDef module_methods[] = {
     MW(change_background_opacity, METH_VARARGS),
     MW(background_opacity_of, METH_O),
     MW(update_window_visibility, METH_VARARGS),
+    MW(mark_window_floating, METH_VARARGS),
     MW(sync_os_window_title, METH_VARARGS),
     MW(get_os_window_title, METH_VARARGS),
     MW(set_os_window_title, METH_VARARGS),

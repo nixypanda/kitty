@@ -583,6 +583,9 @@ def update_window_title(os_window_id: int, tab_id: int, window_id: int, title: s
 def update_window_visibility(os_window_id: int, tab_id: int, window_id: int, visible: bool) -> None:
     pass
 
+def mark_window_floating(os_window_id: int, tab_id: int, window_id: int, floating: bool) -> None:
+    pass
+
 def sync_os_window_title(os_window_id: int) -> None:
     pass
 

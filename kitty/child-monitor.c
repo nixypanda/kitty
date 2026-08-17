@@ -907,16 +907,21 @@ render_prepared_os_window(OSWindow *os_window, unsigned int active_window_id, co
     unsigned int num_of_visible_windows = 0;
     Window *active_window = NULL;
     for (unsigned int i = 0; i < tab->num_windows; i++) { if (tab->windows[i].visible) num_of_visible_windows++; }
-    for (unsigned int i = 0; i < tab->num_windows; i++) {
-        Window *w = tab->windows + i;
-        if (w->visible && WD.screen) {
-            bool is_active_window = i == tab->active_window;
-            if (is_active_window) active_window = w;
-            draw_cells(&WD, os_window, is_active_window, false, num_of_visible_windows == 1, w);
-            if (WD.screen->start_visual_bell_at | WD.screen->start_drag_overlay_at) set_maximum_wait(ANIMATION_SAMPLE_WAIT);
-            WindowRenderData *trd = &w->window_title_render_data;
-            if (trd->screen && trd->geometry.right > trd->geometry.left && trd->geometry.bottom > trd->geometry.top)
-                draw_cells(trd, os_window, i == tab->active_window, true, false, NULL);
+    // Two passes so floating windows always paint on top of tiled ones (painter's
+    // algorithm), independent of their position in the window array.
+    for (unsigned int pass = 0; pass < 2; pass++) {
+        for (unsigned int i = 0; i < tab->num_windows; i++) {
+            Window *w = tab->windows + i;
+            if (w->floating != (pass == 1)) continue;
+            if (w->visible && WD.screen) {
+                bool is_active_window = i == tab->active_window;
+                if (is_active_window) active_window = w;
+                draw_cells(&WD, os_window, is_active_window, false, num_of_visible_windows == 1, w);
+                if (WD.screen->start_visual_bell_at | WD.screen->start_drag_overlay_at) set_maximum_wait(ANIMATION_SAMPLE_WAIT);
+                WindowRenderData *trd = &w->window_title_render_data;
+                if (trd->screen && trd->geometry.right > trd->geometry.left && trd->geometry.bottom > trd->geometry.top)
+                    draw_cells(trd, os_window, i == tab->active_window, true, false, NULL);
+            }
         }
     }
     setup_os_window_for_rendering(os_window, tab, active_window, false);
