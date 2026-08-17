@@ -175,6 +175,20 @@ class WindowList:
         self._active_group_idx: int = -1
         self.active_group_history: Deque[int] = deque((), 64)
         self.tabref = weakref.ref(tab)
+        self.floating_window_id: int | None = None
+
+    def layoutable_groups(self, only_visible: bool = False) -> list[WindowGroup]:
+        fid = self.floating_window_id
+        groups = self.groups if fid is None else [g for g in self.groups if not g.has_window_id(fid)]
+        if only_visible:
+            groups = [g for g in groups if g.is_visible_in_layout]
+        return list(groups)
+
+    def navigable_group_indices(self) -> list[int]:
+        fid = self.floating_window_id
+        if fid is None:
+            return list(range(len(self.groups)))
+        return [i for i, g in enumerate(self.groups) if not g.has_window_id(fid)]
 
     def __len__(self) -> int:
         return len(self.all_windows)
@@ -306,13 +320,13 @@ class WindowList:
         self.tabref = weakref.ref(tab)
 
     def iter_windows_with_visibility(self) -> Iterator[tuple[WindowType, bool]]:
-        for g in self.groups:
+        for g in self.layoutable_groups():
             aw = g.active_window_id
             for window in g:
                 yield window, window.id == aw
 
     def iter_all_layoutable_groups(self, only_visible: bool = False) -> Iterator[WindowGroup]:
-        return iter(g for g in self.groups if g.is_visible_in_layout) if only_visible else iter(self.groups)
+        return iter(self.layoutable_groups(only_visible=only_visible))
 
     def iter_windows_with_number(self, only_visible: bool = True) -> Iterator[tuple[int, WindowType]]:
         for i, g in enumerate(self.groups):
@@ -340,7 +354,7 @@ class WindowList:
 
     @property
     def num_groups(self) -> int:
-        return len(self.groups)
+        return len(self.layoutable_groups())
 
     def window_for_id(self, x: int) -> WindowType | None:
         return self.id_map.get(x)
@@ -355,6 +369,16 @@ class WindowList:
     def group_for_id(self, gid: int) -> WindowGroup | None:
         for g in self.groups:
             if g.id == gid:
+                return g
+        return None
+
+    @property
+    def floating_group(self) -> WindowGroup | None:
+        fid = self.floating_window_id
+        if fid is None:
+            return None
+        for g in self.groups:
+            if g.has_window_id(fid):
                 return g
         return None
 
@@ -394,6 +418,25 @@ class WindowList:
     def active_window(self) -> WindowType | None:
         with suppress(Exception):
             return self.id_map[self.groups[self.active_group_idx].active_window_id]
+        return None
+
+    @property
+    def layout_active_window(self) -> WindowType | None:
+        # The active window as far as tiling/layout is concerned: the float is
+        # never a layoutable window, so when it is focused we fall back to the
+        # most-recent non-floating group. This keeps the underlying tiled window
+        # visible instead of being hidden because the float stole active status.
+        aw = self.active_window
+        fid = self.floating_window_id
+        if fid is None or aw is None or aw.id != fid:
+            return aw
+        gid_map = {g.id: g for g in self.groups}
+        for gid in reversed(self.active_group_history):
+            g = gid_map.get(gid)
+            if g is not None and not g.has_window_id(fid):
+                return self.id_map.get(g.active_window_id)
+        for i in self.navigable_group_indices():
+            return self.id_map.get(self.groups[i].active_window_id)
         return None
 
     @property
@@ -485,10 +528,11 @@ class WindowList:
             self.notify_on_active_window_change(old_active_window, new_active_window)
 
     def active_window_in_nth_group(self, n: int, clamp: bool = False) -> WindowType | None:
+        indices = self.navigable_group_indices()
         if clamp:
-            n = max(0, min(n, self.num_groups - 1))
-        if 0 <= n < self.num_groups:
-            return self.id_map.get(self.groups[n].active_window_id)
+            n = max(0, min(n, len(indices) - 1))
+        if 0 <= n < len(indices):
+            return self.id_map.get(self.groups[indices[n]].active_window_id)
         return None
 
     def active_window_in_group_id(self, group_id: int) -> WindowType | None:
@@ -498,14 +542,29 @@ class WindowList:
         return None
 
     def activate_next_window_group(self, delta: int) -> None:
-        self.set_active_group_idx(wrap_increment(self.active_group_idx, self.num_groups, delta))
+        indices = self.navigable_group_indices()
+        if not indices:
+            return
+        try:
+            pos = indices.index(self.active_group_idx)
+        except ValueError:
+            pos = 0
+        target = indices[(pos + delta) % len(indices)]
+        self.set_active_group_idx(target)
 
     def move_window_group(self, by: int | None = None, to_group: int | None = None) -> bool:
         if self.active_group_idx < 0 or not self.groups:
             return False
         target = -1
         if by is not None:
-            target = wrap_increment(self.active_group_idx, self.num_groups, by)
+            indices = self.navigable_group_indices()
+            if not indices:
+                return False
+            try:
+                pos = indices.index(self.active_group_idx)
+            except ValueError:
+                pos = 0
+            target = indices[(pos + by) % len(indices)]
         if to_group is not None:
             for i, group in enumerate(self.groups):
                 if group.id == to_group:
@@ -547,9 +606,8 @@ class WindowList:
     @property
     def has_more_than_one_visible_group(self) -> bool:
         ans = 0
-        for gr in self.groups:
-            if gr.is_visible_in_layout:
-                ans += 1
-                if ans > 1:
-                    return True
+        for gr in self.layoutable_groups(only_visible=True):
+            ans += 1
+            if ans > 1:
+                return True
         return False

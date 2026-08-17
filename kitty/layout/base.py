@@ -389,7 +389,7 @@ class Layout:
         return False
 
     def update_visibility(self, all_windows: WindowList) -> None:
-        active_window = all_windows.active_window
+        active_window = all_windows.layout_active_window
         for window, is_group_leader in all_windows.iter_windows_with_visibility():
             is_visible = window is active_window or (is_group_leader and not self.only_active_window_visible)
             window.set_visible_in_layout(is_visible)
