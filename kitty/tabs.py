@@ -495,6 +495,12 @@ class Tab:  # {{{
 
     def active_window_changed(self) -> None:
         w = self.active_window
+        if not (self.floating and self.floating.enabled) and w is not None and self.is_floating_window(w):
+            for candidate in self.windows:
+                if candidate.id != w.id:
+                    self.windows.set_active_window_group_for(candidate)
+                    w = self.active_window
+                    break
         set_active_window(self.os_window_id, self.id, 0 if w is None else w.id)
         self.mark_tab_bar_dirty()
         self.relayout_borders()
@@ -1062,9 +1068,22 @@ class Tab:  # {{{
             overlay_for = window.id
 
     def set_active_window(self, x: Window | int, for_keep_focus: Window | None = None) -> None:
-        if (w := self.windows.window_for_id(x) if isinstance(x, int) else x) is not None:
-            self.windows.set_active_window_group_for(w, for_keep_focus=for_keep_focus)
-            self.windows.move_window_to_top_of_group(w)
+        w = self.windows.window_for_id(x) if isinstance(x, int) else x
+        if w is None:
+            return
+        # The float is independently focusable: an enabled float may or may not be
+        # the active window, and a tiled window underneath can be activated while
+        # the float stays visible on top. Only a disabled float must never become
+        # active, so redirect focus off it to a tiled window in that one case.
+        if self.is_floating_window(w) and not (self.floating and self.floating.enabled):
+            for candidate in self.windows:
+                if candidate.id != w.id:
+                    self.windows.set_active_window_group_for(candidate)
+                    self.windows.move_window_to_top_of_group(candidate)
+                    return
+            return
+        self.windows.set_active_window_group_for(w, for_keep_focus=for_keep_focus)
+        self.windows.move_window_to_top_of_group(w)
 
     def get_nth_window(self, n: int) -> Window | None:
         if self.windows:
